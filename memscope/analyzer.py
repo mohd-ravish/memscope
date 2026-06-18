@@ -24,7 +24,10 @@ def analyze(samples) -> LeakAnalysis:
             recommendation="Ensure training runs for at least 10 sampler intervals (~5 seconds at default settings).",
         )
 
-    y = np.array([s.allocated_mb for s in samples])
+    gpu_vals = np.array([s.allocated_mb for s in samples])
+    cpu_vals = np.array([s.cpu_mb for s in samples])
+    # Use CPU RAM when no GPU is present (all GPU values are zero)
+    y = cpu_vals if gpu_vals.max() == 0.0 else gpu_vals
     x = np.arange(len(y))
 
     slope, intercept, r_value, p_value, _ = stats.linregress(x, y)
@@ -78,9 +81,9 @@ def analyze(samples) -> LeakAnalysis:
             ),
         )
 
-    # Pattern 3: High but flat — over-allocated, not a leak
+    # Pattern 3: High but flat — over-allocated, not a leak (GPU only)
     gpu_total = _get_gpu_total_mb()
-    if gpu_total and np.mean(y) > 0.85 * gpu_total:
+    if gpu_total and gpu_vals.max() > 0 and np.mean(y) > 0.85 * gpu_total:
         return LeakAnalysis(
             pattern="over_allocation",
             severity="low",

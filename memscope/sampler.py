@@ -1,17 +1,24 @@
+import os
 import threading
 import time
 import torch
-import tracemalloc
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+try:
+    import psutil
+    _PROCESS = psutil.Process(os.getpid())
+    _HAS_PSUTIL = True
+except ImportError:
+    _HAS_PSUTIL = False
 
 
 @dataclass
 class MemorySample:
     timestamp: float
     step: int
-    allocated_mb: float
-    reserved_mb: float
-    cpu_mb: float
+    allocated_mb: float   # GPU: torch.cuda.memory_allocated()
+    reserved_mb: float    # GPU: torch.cuda.memory_reserved()
+    cpu_mb: float         # CPU: process RSS via psutil (includes PyTorch C++ tensors)
 
 
 class MemorySampler:
@@ -24,7 +31,6 @@ class MemorySampler:
         self._lock = threading.Lock()
 
     def start(self):
-        tracemalloc.start()
         self._running = True
         self._thread = threading.Thread(target=self._run, daemon=True, name="memscope-sampler")
         self._thread.start()
@@ -33,7 +39,6 @@ class MemorySampler:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2.0)
-        tracemalloc.stop()
 
     def increment_step(self):
         with self._lock:
@@ -52,10 +57,14 @@ class MemorySampler:
                 allocated = torch.cuda.memory_allocated() / 1024**2
                 reserved = torch.cuda.memory_reserved() / 1024**2
 
-            try:
-                current, _ = tracemalloc.get_traced_memory()
-                cpu_mb = current / 1024**2
-            except Exception:
+            # psutil RSS captures real process memory including PyTorch C++ allocations.
+            # tracemalloc only sees Python objects and misses tensor data entirely.
+            if _HAS_PSUTIL:
+                try:
+                    cpu_mb = _PROCESS.memory_info().rss / 1024**2
+                except Exception:
+                    cpu_mb = 0.0
+            else:
                 cpu_mb = 0.0
 
             with self._lock:
